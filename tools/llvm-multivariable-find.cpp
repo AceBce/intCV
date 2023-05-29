@@ -77,6 +77,7 @@ struct FunctionInfo {
     vector<pair<string, int>> vars;
 };
 int codedistance = 10;
+map<string, GlobalVar*> nametovar;
 set<FunctionInfo*> funinfos;
 set<GlobalVar*> globals;
 set<string> funs;
@@ -139,8 +140,9 @@ int main(int argc, char *argv[]) {
         funinfo->funname = funname;
         funinfo->startline = startline;
         funinfo->endline = endline;
-
+        funinfos.insert(funinfo);
         vector<pair<string, int>> funvars;
+
         for (auto &BB : F) {
             for (auto &I : BB) {
                 if (GetElementPtrInst *gepinst = dyn_cast<GetElementPtrInst>(&I)) {
@@ -171,7 +173,7 @@ int main(int argc, char *argv[]) {
                             Gvar->setID(id++);
                             Gvar->addBelongtofun(funname);
                             globals.insert(Gvar);
-
+                            nametovar.insert({name, Gvar});
                         }
                         if (isa<GEPOperator>(op)) {
                             GEPOperator *GEPOp = dyn_cast<GEPOperator>(op);
@@ -265,7 +267,7 @@ int main(int argc, char *argv[]) {
                                         funvars.push_back({fullname, line});
                                     }
                                     globals.insert(Gvar);
-
+                                    nametovar.insert({fullname, Gvar});
                                 }
                                 else if (auto *ST = dyn_cast<StructType>(PT->getElementType())) {
                                     //是结构体
@@ -307,7 +309,7 @@ int main(int argc, char *argv[]) {
                                         funvars.push_back({fullname, line});
                                     }
                                     globals.insert(Gvar);
-
+                                    nametovar.insert({fullname, Gvar});
                                 }
                             }
                         }
@@ -316,26 +318,37 @@ int main(int argc, char *argv[]) {
 
             }
         }
+        funinfo->vars = funvars;
+    }
 
-    }
-    for (auto &i : globals) {
-        outs() << i->getName() << "\n";
-    }
     //先搜集一下距离近的变量
     for (auto *f : funinfos) {
         sort(f->vars.begin(), f->vars.end(), [&] (const pair<string, int> &p1, const pair<string, int> &p2) -> bool {
             return p1.second < p2.second;
         });
+
         for (auto &p : f->vars) {
             for (auto &q : f->vars) {
                 if (p == q)
+                    continue;
+                if (q.first == p.first)
                     continue;
                 if (q.second >= p.second - codedistance / 2 && q.second <= p.second + codedistance / 2) {
                     //搞一个容器装所有的全局变量名字，再进行搜索
                     //map<string, GlobalVar*>
                     //添加每个GlobalVar的codeclose
+                    nametovar[p.first]->addClosedis(q.first);
                 }
             }
+        }
+    }
+    for (auto &i : globals) {
+        outs() << i->getName() << ":\n";
+        if (i->getClosedis().empty()) {
+            continue;
+        }
+        for (auto &j : i->getClosedis()) {
+            outs() << j.first << " " << j.second << " times\n";
         }
     }
     //搜集具有兄弟关系的变量
