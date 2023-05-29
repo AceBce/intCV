@@ -71,9 +71,18 @@ class GlobalVar {
     void addControldep(const string &that) {controldep[that]++; }
     map<string, int> &getControldep() {return controldep; }
 };
+struct FunctionInfo {
+    string funname;
+    unsigned int startline, endline;
+    vector<pair<string, int>> vars;
+};
+int codedistance = 10;
+set<FunctionInfo*> funinfos;
 set<GlobalVar*> globals;
 set<string> funs;
 set<tuple<int, int, string>> linetofun;//存储一个函数的startline, endline, funname
+map<string, set<GlobalVar*>> funhasglobalvar;//函数里有哪些变量
+
 llvm::cl::opt<bool> enable_debug(
         "dbg", llvm::cl::desc("Enable debugging messages (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
@@ -83,7 +92,7 @@ llvm::cl::opt<bool> dump_bb_only(
         llvm::cl::desc("Only dump basic blocks of dependence graph to dot"
                        " (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
-bool isStructArray(llvm::Type* type);//递归判断是不是结构体数组
+bool isStructArray(Type* type);//递归判断是不是结构体数组
 int main(int argc, char *argv[]) {
     setupStackTraceOnError(argc, argv);
     SlicerOptions options = parseSlicerOptions(argc, argv);
@@ -126,12 +135,12 @@ int main(int argc, char *argv[]) {
         auto funname = F.getName().str();
         if (funname.find("llvm.dbg") != string::npos)
             continue;
-        tuple<int, int, string> t;
-        std::get<0>(t) = startline;
-        std::get<1>(t) = endline;
-        std::get<2>(t) = funname;
-        linetofun.insert(t);
-        funs.insert(funname);
+        FunctionInfo *funinfo = new FunctionInfo();
+        funinfo->funname = funname;
+        funinfo->startline = startline;
+        funinfo->endline = endline;
+
+        vector<pair<string, int>> funvars;
         for (auto &BB : F) {
             for (auto &I : BB) {
                 if (GetElementPtrInst *gepinst = dyn_cast<GetElementPtrInst>(&I)) {
@@ -157,10 +166,12 @@ int main(int argc, char *argv[]) {
                                 unsigned line;
                                 line = I.getDebugLoc().getLine();
                                 Gvar->addbelongtoline(line);
+                                funvars.push_back({name, line});
                             }
                             Gvar->setID(id++);
                             Gvar->addBelongtofun(funname);
                             globals.insert(Gvar);
+
                         }
                         if (isa<GEPOperator>(op)) {
                             GEPOperator *GEPOp = dyn_cast<GEPOperator>(op);
@@ -249,9 +260,12 @@ int main(int argc, char *argv[]) {
                                     Gvar->setType(2);
                                     Gvar->addBelongtofun(funname);
                                     if (I.getDebugLoc()) {
-                                        Gvar->addbelongtoline(I.getDebugLoc().getLine());
+                                        unsigned line = I.getDebugLoc().getLine();
+                                        Gvar->addbelongtoline(line);
+                                        funvars.push_back({fullname, line});
                                     }
                                     globals.insert(Gvar);
+
                                 }
                                 else if (auto *ST = dyn_cast<StructType>(PT->getElementType())) {
                                     //是结构体
@@ -288,9 +302,12 @@ int main(int argc, char *argv[]) {
                                     Gvar->setType(2);
                                     Gvar->addBelongtofun(funname);
                                     if (I.getDebugLoc()) {
-                                        Gvar->addbelongtoline(I.getDebugLoc().getLine());
+                                        unsigned line = I.getDebugLoc().getLine();
+                                        Gvar->addbelongtoline(line);
+                                        funvars.push_back({fullname, line});
                                     }
                                     globals.insert(Gvar);
+
                                 }
                             }
                         }
@@ -299,18 +316,38 @@ int main(int argc, char *argv[]) {
 
             }
         }
+
     }
     for (auto &i : globals) {
         outs() << i->getName() << "\n";
     }
-
+    //先搜集一下距离近的变量
+    for (auto *f : funinfos) {
+        sort(f->vars.begin(), f->vars.end(), [&] (const pair<string, int> &p1, const pair<string, int> &p2) -> bool {
+            return p1.second < p2.second;
+        });
+        for (auto &p : f->vars) {
+            for (auto &q : f->vars) {
+                if (p == q)
+                    continue;
+                if (q.second >= p.second - codedistance / 2 && q.second <= p.second + codedistance / 2) {
+                    //搞一个容器装所有的全局变量名字，再进行搜索
+                    //map<string, GlobalVar*>
+                    //添加每个GlobalVar的codeclose
+                }
+            }
+        }
+    }
+    //搜集具有兄弟关系的变量
+    //搜集具有相似命名的变量
+    //搜集具有依赖关系的变量
     return 0;
 }
-bool isStructArray(llvm::Type* type) {
-    if (llvm::ArrayType* arrayType = llvm::dyn_cast<llvm::ArrayType>(type)) {
-        llvm::Type* elementType = arrayType->getElementType();
+bool isStructArray(Type* type) {
+    if (ArrayType* arrayType = dyn_cast<ArrayType>(type)) {
+        Type* elementType = arrayType->getElementType();
         return isStructArray(elementType);
-    } else if (llvm::StructType* structType = llvm::dyn_cast<llvm::StructType>(type)) {
+    } else if (llvm::StructType* structType = dyn_cast<StructType>(type)) {
         // 全局变量是结构体类型
         return true;
     }
