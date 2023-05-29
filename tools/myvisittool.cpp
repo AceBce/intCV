@@ -591,7 +591,7 @@ int main(int argc, char *argv[]) {
                                     }
                                     //判断操作数的类型，是不是高维数组
                                     Value *ope = GEPOp->getOperand(0);
-                                    //                                    outs() << *ope << "\n";
+                                    //outs() << *ope << "\n";
                                     int dimension = 1;//记录数组的维度
                                     if (auto *pointertype = dyn_cast<PointerType>(ope->getType())) {
                                         if (auto *arraytype = dyn_cast<ArrayType>(pointertype->getElementType())) {
@@ -601,7 +601,7 @@ int main(int argc, char *argv[]) {
                                             }
                                         }
                                     }
-                                    //                                    outs() << "是" << dimension << "维数组\n";
+                                    //outs() << "是" << dimension << "维数组\n";
                                     for (int i = 3; i < GEPOp->getNumOperands() && dimension > 1; i++, dimension--) {
                                         //获取其他维度下标
                                         if (auto *Idx = GEPOp->getOperand(i)) {
