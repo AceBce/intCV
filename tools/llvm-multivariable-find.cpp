@@ -76,7 +76,6 @@ class GlobalVar {
     map<string, int> &getControldep() {return controldep; }
     void addnode(dg::sdg::DGNode *n) {nodes.insert(n); }
     set<dg::sdg::DGNode*> getnode() {return nodes; }
-
 };
 struct FunctionInfo {
     string funname;
@@ -87,7 +86,12 @@ int codedistance = 10;
 map<string, set<string>> basenametoname;
 map<string, GlobalVar*> nametovar;
 set<FunctionInfo*> funinfos;
-set<GlobalVar*> globals;
+struct Gvarpointercmp {
+    bool operator () (GlobalVar *Gvar1, GlobalVar *Gvar2) {
+        return Gvar1->getName() < Gvar2->getName();
+    }
+};
+set<GlobalVar*, Gvarpointercmp> globals;
 set<string> funs;
 set<tuple<int, int, string>> linetofun;//存储一个函数的startline, endline, funname
 map<string, set<GlobalVar*>> funhasglobalvar;//函数里有哪些变量
@@ -104,8 +108,8 @@ llvm::cl::opt<bool> dump_bb_only(
 bool isStructArray(Type* type);//递归判断是不是结构体数组
 bool isCloseName(const string &name1, const string &name2);
 void Dep(llvmdg::SystemDependenceGraph &sdg, GlobalVar *Gvar);
-void controldep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node);
-void datadep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node);
+void controldep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, GlobalVar *Gvar);
+void datadep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, GlobalVar *Gvar);
 int main(int argc, char *argv[]) {
     setupStackTraceOnError(argc, argv);
     SlicerOptions options = parseSlicerOptions(argc, argv);
@@ -410,7 +414,7 @@ int main(int argc, char *argv[]) {
 //        }
 //    }
 
-    //搜集具有兄弟关系的变量
+    //搜集具有兄弟关系,相似命名的变量
     for (auto &g : globals) {
         if (g->getType() == 1)
             continue;
@@ -431,36 +435,55 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-//    for (auto &g : globals) {
-//        outs() << g->getName() << ": ";
-//        for (auto &gb : g->getBrother()) {
-//            outs() << gb << " ";
-//        }
-//        outs() << "\n";
-//    }
-    //搜集具有相似命名的变量
+    //输出兄弟关系的变量
     for (auto &g : globals) {
         outs() << g->getName() << ": ";
-        for (auto &cn : g->getClosename()) {
-            outs() << cn << " ";
+        for (auto &gb : g->getBrother()) {
+            outs() << gb << " ";
         }
         outs() << "\n";
     }
+    //搜集具有相似命名的变量
+//    for (auto &g : globals) {
+//        outs() << g->getName() << ": ";
+//        for (auto &cn : g->getClosename()) {
+//            outs() << cn << " ";
+//        }
+//        outs() << "\n";
+//    }
     //搜集具有依赖关系的变量
     //先找每个变量对应哪些节点
     for (auto *dg : sdg.getSDG()) {
         for (auto *node : dg->getNodes()) {
             if (Value *v = sdg.getValue(node)) {
+//                outs() << *v << "\n";
                 if (auto *inst = dyn_cast<Instruction>(v)) {
                     auto it = Instrtovar.find(inst);
                     if (it != Instrtovar.end()) {
                         for (auto &g : it->second) {
+//                            outs() << g->getName() << "\n";
                             g->addnode(node);
                         }
                     }
                 }
             }
         }
+    }
+    //计算依赖
+    for (auto &g : globals) {
+        outs() << g->getName() << ": ";
+        for (auto &node : g->getnode()) {
+            outs() << node << " ";
+        }
+        outs() << "\n";
+    }
+    //输出ControlDep
+    for (auto &g : globals) {
+        outs() << g->getName() << ": ";
+        for (auto &p : g->getControldep()) {
+            outs() << p.first << " for " << p.second << " times ";
+        }
+        outs() << "\n";
     }
     return 0;
 }
@@ -524,18 +547,114 @@ bool isCloseName(const string &name1, const string &name2) {
 }
 void Dep(llvmdg::SystemDependenceGraph &sdg, GlobalVar *Gvar) {
     for (auto *node : Gvar->getnode()) {
-        controldep(sdg, node);
-        datadep(sdg, node);
+        controldep(sdg, node, Gvar);
+//        datadep(sdg, node, Gvar);
     }
 }
-void controldep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node) {
+map<dg::sdg::DGNode*, int> visited;//visited[node] = 1是访问过的
+set<dg::sdg::DGNode*> tofindcomesfrom;
+void findcontrolflow(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node) {
+    if (visited[node] == 1)
+        return ;
+    visited[node] = 1;
+    auto *dg_block = node->getBBlock();
+    for (auto *controlelement : dg_block->control_deps()) {
+        if (controlelement == node)
+            continue ;
+        auto thisid = node->getID();
+        auto thatid = dg::sdg::DGBBlock::get(controlelement)->back()->getID();
+        if (thatid > thisid)
+            continue ;
+        if (auto *conblock = dg::sdg::DGBBlock::get(controlelement)) {
+            if (auto *value = sdg.getValue(conblock->back())) {
+                if (auto *inst = dyn_cast<Instruction>(value)) {
+                    if (auto *brinst = dyn_cast<BranchInst>(inst)) {
+                        if (!brinst->isConditional())
+                            continue;
+                        Value *curnodevalue = sdg.getValue(node);
+                        Instruction *curnodeinst = dyn_cast<Instruction>(curnodevalue);
+                        BasicBlock *block = nullptr;
+                        if (curnodeinst->getParent() == brinst->getSuccessor(0)) {
+                            block = brinst->getSuccessor(0);
+                        }
+                        else if (curnodeinst->getParent() == brinst->getSuccessor(1)) {
+                            block = brinst->getSuccessor(1);
+                        }
+                        string labelname0;
+                        if (block && block->hasName()) {
+                            labelname0 = block->getName().str();
+                            if (auto it = labelname0.find(".end")) {
+                                if (it != std::string::npos) {
+                                    //通往end分支，已经不属于这个控制范围了
+                                    return;
+                                }
+                            }
+                        }
+                        auto *v = brinst->getOperand(0);
+                        //outs() << *v << "\n";
+                        tofindcomesfrom.insert(conblock->back());
+
+                    }
+                    else if (auto *switchinst = dyn_cast<SwitchInst>(inst)) {
+                        Value *v = switchinst->getCondition();
+                        //outs() << *v << "\n";
+                        tofindcomesfrom.insert(conblock->back());
+                    }
+                }
+            }
+        }
+    }
+}
+void findcontrolvar(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode * dg_node1, dg::sdg::DGNode *dg_node2, GlobalVar *Gvar) {
+    if (visited[dg_node1] == 1)
+        return ;
+    visited[dg_node1] = 1;
+    int thisid = dg_node1->getID();
+    int thatid = 0;
+    for (auto *usedep : dg_node1->users()) {
+        if (auto *value = sdg.getValue(usedep)) {
+            thatid = usedep->getID();
+            if (thatid > thisid)
+                continue;
+            findcontrolvar(sdg, dg::sdg::DGNode::get(usedep), dg_node1, Gvar);
+        }
+    }
+    if (Value *v = sdg.getValue(dg_node1)) {
+        if (Instruction *inst = dyn_cast<Instruction>(v)) {
+            if (inst && isa<LoadInst>(inst)) {
+                LoadInst *loadInst = dyn_cast<LoadInst>(inst);
+                Value *from = loadInst->getOperand(0);
+                if (from && isa<GlobalVariable>(from)) {
+                    if (from->hasName()) {
+                        Gvar->addControldep(from->getName().str());
+                    }
+                }
+            }
+            else if (inst && isa<CallInst>(inst)) {
+                CallInst *Cinst = dyn_cast<CallInst>(inst);
+                int nums = Cinst->getNumArgOperands();
+                for (int i = 0; i < nums; i++) {
+                    Value *from = Cinst->getArgOperand(i);
+                    if (from->hasName()) {
+                        //outs() << from->getName() << " is from " << line << "\n";
+                        Gvar->addControldep(from->getName().str());
+                    }
+                }
+            }
+        }
+    }
+}
+void controldep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, GlobalVar *Gvar) {
     if (!node)
         return;
-    map<dg::sdg::DGNode*, int> visited;//visited[node] = 1是访问过的
-    set<dg::sdg::DGNode*> tofindcomesfrom;
-    
+    visited.clear();
+    findcontrolflow(sdg, node);
+    visited.clear();
+    for (auto *dg_node : tofindcomesfrom) {
+        findcontrolvar(sdg, dg_node, nullptr, Gvar);
+    }
 }
-void datadep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node) {
+void datadep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, GlobalVar *Gvar) {
     if (!node)
         return;
     map<dg::sdg::DGNode*, int> visited;//visited[node] = 1是访问过的
