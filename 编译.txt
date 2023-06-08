@@ -1,0 +1,2 @@
+clang -emit-llvm -S -fno-discard-value-names -g a.c
+clang -emit-llvm -c -fno-discard-value-names -g a.c

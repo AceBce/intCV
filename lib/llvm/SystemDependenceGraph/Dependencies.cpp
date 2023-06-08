@@ -34,13 +34,13 @@ struct SDGDependenciesBuilder {
 
             auto *opnd = _sdg.getNode(val);
             if (!opnd) {
-                if (auto *fun = llvm::dyn_cast<llvm::Function>(val)) {
-                    llvm::errs() << "[SDG error] Do not have fun as operand: "
-                                 << fun->getName() << "\n";
+                if (llvm::isa<llvm::ConstantInt>(val) ||
+                    llvm::isa<llvm::Function>(val)||
+                    llvm::isa<llvm::ConstantExpr>(val)||//wbx改_处理数组不能建立节点问题
+                    llvm::isa<llvm::ConstantPointerNull>(val)||//wbx改_处理空指针不能建立节点问题
+                    val->getType()->isFloatTy()||//wbx改_float不能建立节点问题
+                    val->getType()->isDoubleTy()) {//wbx改_double不能建立节点问题
                     continue;
-                }
-                else if(auto *gep = llvm::dyn_cast<llvm::GEPOperator>(val)) {
-                    continue ;//wzx改
                 }
 
                 llvm::errs() << "[SDG error] Do not have operand node:\n";
@@ -144,7 +144,7 @@ struct SDGDependenciesBuilder {
 
         if (llvm::isa<llvm::DbgInfoIntrinsic>(&I)) {
             // FIXME
-            llvm::errs() << "sdg: Skipping " << I << "\n";
+//            llvm::errs() << "sdg: Skipping " << I << "\n";
             return;
         }
 

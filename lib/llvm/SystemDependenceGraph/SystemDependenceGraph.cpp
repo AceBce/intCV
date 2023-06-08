@@ -52,7 +52,7 @@ struct SDGBuilder {
         // create actual parameters
         auto &params = node.getParameters();
         for (const auto &arg : llvmutils::args(CI)) {
-            llvm::errs() << "Act: " << *arg << "\n";
+//            llvm::errs() << "Act: " << *arg << "\n";
             params.createParameter();
         }
         return node;
@@ -94,7 +94,7 @@ struct SDGBuilder {
         }
 
         for (auto &arg : F.args()) {
-            llvm::errs() << "Form: " << arg << "\n";
+//            llvm::errs() << "Form: " << arg << "\n";
             auto &param = params.createParameter();
             _llvmsdg->addMapping(&arg, &param);
         }
@@ -120,7 +120,7 @@ struct SDGBuilder {
         for (auto &GV : _module->globals()) {
             auto &g = params.createParameter();
             _llvmsdg->addMapping(&GV, &g);
-            llvm::errs() << "GV: " << GV << "\n";
+//            llvm::errs() << "GV: " << GV << "\n";
         }
         DBG_SECTION_END(sdg, "Finished building globals");
     }

@@ -26,6 +26,7 @@
 
 #include "dg/llvm/SystemDependenceGraph/SDG2Dot.h"
 #include "dg/util/debug.h"
+#include "json.h"
 
 using namespace dg;
 using namespace std;
@@ -38,6 +39,7 @@ class GlobalVar {
     int type; //type = 1是普通变量, type = 2是数组变量， type = 3是结构体变量
     string basename;//如果是数组或是结构体的话就有basename，eg: f[3]的basename为f
     int id;
+    int times; //记录这个变量一共出现的次数
     set<string> belongtofun;//所属的函数
     set<unsigned int>belongtoline;//所属的行号
     map<string, int> closevar;//存储与它相近的全局变量,以及相近了几次
@@ -48,14 +50,16 @@ class GlobalVar {
     //以上存储的都是变量名
     set<dg::sdg::DGNode*> nodes;//存储它出现过的节点
   public:
-    GlobalVar(const string &name, const string &funname) {GlobalVar::name = name, belongtofun.insert(funname); }
-    explicit GlobalVar(const string &name) : name(name) {}
+    GlobalVar(const string &name, const string &funname) : name(name){times = 0, belongtofun.insert(funname); }
+    explicit GlobalVar(const string &name) : name(name) {times = 0; }
     void setName(const string &name)  {GlobalVar::name = name; }
     const string &getName() {return name; }
     void setBaseName(const string &name) {basename = name; }
     string &getBaseName() {return basename;;}
     void setID(int id) {this->id = id; }
     int getID() {return id; }
+    int getTimes() {return times; }
+    void addTimes() {times++; }
     void addBelongtofun(string funname) {belongtofun.insert(std::move(funname)); }
     set<string> &getBelongtofun() {return belongtofun; }
     void clearBelongtofun() {belongtofun.clear(); }
@@ -129,7 +133,11 @@ int main(int argc, char *argv[]) {
                      << options.dgOptions.entryFunction << "\n";
         return 1;
     }
-
+    string filename = M->getModuleIdentifier();
+    size_t lastSlashPos = filename.find_last_of('/');
+    if (lastSlashPos != string::npos) {
+        filename = filename.substr(lastSlashPos + 1);
+    }
     DGLLVMPointerAnalysis PTA(M.get(), options.dgOptions.PTAOptions);
     PTA.run();
     LLVMDataDependenceAnalysis DDA(M.get(), &PTA, options.dgOptions.DDAOptions);
@@ -157,7 +165,7 @@ int main(int argc, char *argv[]) {
         funinfo->startline = startline;
         funinfo->endline = endline;
         funinfos.insert(funinfo);
-        vector<pair<string, int>> funvars;
+        vector<pair<string, int>> funvars; //存一个变量以及对应的行号
 
         for (auto &BB : F) {
             for (auto &I : BB) {
@@ -180,25 +188,51 @@ int main(int argc, char *argv[]) {
                             GlobalVariable *GV = dyn_cast<GlobalVariable>(op);
                             string name = GV->getName().str();
                             GlobalVar *Gvar = new GlobalVar(name);
-                            if (I.getDebugLoc()) {
-                                unsigned line;
-                                line = I.getDebugLoc().getLine();
-                                Gvar->addbelongtoline(line);
-                                funvars.push_back({name, line});
-                            }
-                            Gvar->setID(id++);
-                            Gvar->addBelongtofun(funname);
-                            globals.insert(Gvar);
-                            nametovar.insert({name, Gvar});
-                            auto it = Instrtovar.find(&I);
-                            if (it != Instrtovar.end()) {
-                                Instrtovar[&I].insert(Gvar);
+                            auto gvarit = globals.find(Gvar);
+                            if (gvarit != globals.end()) {
+                                if (I.getDebugLoc()) {
+                                    unsigned line;
+                                    line = I.getDebugLoc().getLine();
+                                    (*gvarit)->addbelongtoline(line);
+                                    funvars.push_back({name, line});
+                                }
+                                (*gvarit)->addBelongtofun(funname);
+                                (*gvarit)->addTimes();
+                                auto it = Instrtovar.find(&I);
+                                if (it != Instrtovar.end()) {
+                                    Instrtovar[&I].insert(*gvarit);
+                                }
+                                else {
+                                    set<GlobalVar*> s;
+                                    s.insert(*gvarit);
+                                    Instrtovar[&I] = s;
+                                }
+                                delete Gvar;
                             }
                             else {
-                                set<GlobalVar*> s;
-                                s.insert(Gvar);
-                                Instrtovar[&I] = s;
+                                if (I.getDebugLoc()) {
+                                    unsigned line;
+                                    line = I.getDebugLoc().getLine();
+                                    Gvar->addbelongtoline(line);
+                                    funvars.push_back({name, line});
+                                }
+                                Gvar->setID(id++);
+                                Gvar->setType(1);
+                                Gvar->addBelongtofun(funname);
+                                Gvar->addTimes();
+                                globals.insert(Gvar);
+                                nametovar.insert({name, Gvar});
+                                auto it = Instrtovar.find(&I);
+                                if (it != Instrtovar.end()) {
+                                    Instrtovar[&I].insert(Gvar);
+                                }
+                                else {
+                                    set<GlobalVar*> s;
+                                    s.insert(Gvar);
+                                    Instrtovar[&I] = s;
+                                }
                             }
+
                         }
                         if (isa<GEPOperator>(op)) {
                             GEPOperator *GEPOp = dyn_cast<GEPOperator>(op);
@@ -284,34 +318,59 @@ int main(int argc, char *argv[]) {
                                     }
                                     fullname += plusname;
                                     GlobalVar *Gvar = new GlobalVar(fullname);
-                                    Gvar->setID(id++);
-                                    Gvar->setType(2);
-                                    Gvar->addBelongtofun(funname);
-                                    Gvar->setBaseName(base);
-                                    if (I.getDebugLoc()) {
-                                        unsigned line = I.getDebugLoc().getLine();
-                                        Gvar->addbelongtoline(line);
-                                        funvars.push_back({fullname, line});
-                                    }
-                                    globals.insert(Gvar);
-                                    nametovar.insert({fullname, Gvar});
-                                    if (basenametoname.find(base) != basenametoname.end()) {
-                                        basenametoname[base].insert(fullname);
-                                    }
-                                    else {
-                                        set<string> s;
-                                        s.insert(fullname);
-                                        basenametoname[base] = s;
-                                    }
-                                    auto it = Instrtovar.find(&I);
-                                    if (it != Instrtovar.end()) {
-                                        Instrtovar[&I].insert(Gvar);
+                                    auto gvarit = globals.find(Gvar);
+                                    if (gvarit != globals.end()) {
+                                        delete Gvar;
+                                        if (I.getDebugLoc()) {
+                                            unsigned line;
+                                            line = I.getDebugLoc().getLine();
+                                            (*gvarit)->addbelongtoline(line);
+                                            funvars.push_back({fullname, line});
+                                        }
+                                        (*gvarit)->addBelongtofun(funname);
+                                        (*gvarit)->addTimes();
+                                        auto it = Instrtovar.find(&I);
+                                        if (it != Instrtovar.end()) {
+                                            Instrtovar[&I].insert(*gvarit);
+                                        }
+                                        else {
+                                            set<GlobalVar*> s;
+                                            s.insert(*gvarit);
+                                            Instrtovar[&I] = s;
+                                        }
                                     }
                                     else {
-                                        set<GlobalVar*> s;
-                                        s.insert(Gvar);
-                                        Instrtovar[&I] = s;
+                                        Gvar->setID(id++);
+                                        Gvar->setType(2);
+                                        Gvar->addBelongtofun(funname);
+                                        Gvar->setBaseName(base);
+                                        Gvar->addTimes();
+                                        if (I.getDebugLoc()) {
+                                            unsigned line = I.getDebugLoc().getLine();
+                                            Gvar->addbelongtoline(line);
+                                            funvars.push_back({fullname, line});
+                                        }
+                                        globals.insert(Gvar);
+                                        nametovar.insert({fullname, Gvar});
+                                        if (basenametoname.find(base) != basenametoname.end()) {
+                                            basenametoname[base].insert(fullname);
+                                        }
+                                        else {
+                                            set<string> s;
+                                            s.insert(fullname);
+                                            basenametoname[base] = s;
+                                        }
+                                        auto it = Instrtovar.find(&I);
+                                        if (it != Instrtovar.end()) {
+                                            Instrtovar[&I].insert(Gvar);
+                                        }
+                                        else {
+                                            set<GlobalVar*> s;
+                                            s.insert(Gvar);
+                                            Instrtovar[&I] = s;
+                                        }
                                     }
+
                                 }
                                 else if (auto *ST = dyn_cast<StructType>(PT->getElementType())) {
                                     //是结构体
@@ -344,34 +403,59 @@ int main(int argc, char *argv[]) {
                                     }
                                     fullname = structname + fieldname;
                                     GlobalVar *Gvar = new GlobalVar(fullname);
-                                    Gvar->setID(id++);
-                                    Gvar->setType(2);
-                                    Gvar->setBaseName(base);
-                                    Gvar->addBelongtofun(funname);
-                                    if (I.getDebugLoc()) {
-                                        unsigned line = I.getDebugLoc().getLine();
-                                        Gvar->addbelongtoline(line);
-                                        funvars.push_back({fullname, line});
-                                    }
-                                    globals.insert(Gvar);
-                                    nametovar.insert({fullname, Gvar});
-                                    if (basenametoname.find(base) != basenametoname.end()) {
-                                        basenametoname[base].insert(fullname);
-                                    }
-                                    else {
-                                        set<string> s;
-                                        s.insert(fullname);
-                                        basenametoname[base] = s;
-                                    }
-                                    auto it = Instrtovar.find(&I);
-                                    if (it != Instrtovar.end()) {
-                                        Instrtovar[&I].insert(Gvar);
+                                    auto gvarit = globals.find(Gvar);
+                                    if (gvarit != globals.end()) {
+                                        delete Gvar;
+                                        if (I.getDebugLoc()) {
+                                            unsigned line;
+                                            line = I.getDebugLoc().getLine();
+                                            (*gvarit)->addbelongtoline(line);
+                                            funvars.push_back({fullname, line});
+                                        }
+                                        (*gvarit)->addBelongtofun(funname);
+                                        (*gvarit)->addTimes();
+                                        auto it = Instrtovar.find(&I);
+                                        if (it != Instrtovar.end()) {
+                                            Instrtovar[&I].insert(*gvarit);
+                                        }
+                                        else {
+                                            set<GlobalVar*> s;
+                                            s.insert(*gvarit);
+                                            Instrtovar[&I] = s;
+                                        }
                                     }
                                     else {
-                                        set<GlobalVar*> s;
-                                        s.insert(Gvar);
-                                        Instrtovar[&I] = s;
+                                        Gvar->setID(id++);
+                                        Gvar->setType(2);
+                                        Gvar->setBaseName(base);
+                                        Gvar->addBelongtofun(funname);
+                                        Gvar->addTimes();
+                                        if (I.getDebugLoc()) {
+                                            unsigned line = I.getDebugLoc().getLine();
+                                            Gvar->addbelongtoline(line);
+                                            funvars.push_back({fullname, line});
+                                        }
+                                        globals.insert(Gvar);
+                                        nametovar.insert({fullname, Gvar});
+                                        if (basenametoname.find(base) != basenametoname.end()) {
+                                            basenametoname[base].insert(fullname);
+                                        }
+                                        else {
+                                            set<string> s;
+                                            s.insert(fullname);
+                                            basenametoname[base] = s;
+                                        }
+                                        auto it = Instrtovar.find(&I);
+                                        if (it != Instrtovar.end()) {
+                                            Instrtovar[&I].insert(Gvar);
+                                        }
+                                        else {
+                                            set<GlobalVar*> s;
+                                            s.insert(Gvar);
+                                            Instrtovar[&I] = s;
+                                        }
                                     }
+
                                 }
                             }
                         }
@@ -384,26 +468,25 @@ int main(int argc, char *argv[]) {
     }
 
     //先搜集一下距离近的变量
-//    for (auto *f : funinfos) {
-//        sort(f->vars.begin(), f->vars.end(), [&] (const pair<string, int> &p1, const pair<string, int> &p2) -> bool {
-//            return p1.second < p2.second;
-//        });
-//
-//        for (auto &p : f->vars) {
-//            for (auto &q : f->vars) {
-//                if (p == q)
-//                    continue;
-//                if (q.first == p.first)
-//                    continue;
-//                if (q.second >= p.second - codedistance / 2 && q.second <= p.second + codedistance / 2) {
-//                    //搞一个容器装所有的全局变量名字，再进行搜索
-//                    //map<string, GlobalVar*>
-//                    //添加每个GlobalVar的codeclose
-//                    nametovar[p.first]->addClosedis(q.first);
-//                }
-//            }
-//        }
-//    }
+    for (auto *f : funinfos) {
+        sort(f->vars.begin(), f->vars.end(), [&] (const pair<string, int> &p1, const pair<string, int> &p2) -> bool {
+            return p1.second < p2.second;
+        });
+        for (auto &p : f->vars) {
+            for (auto &q : f->vars) {
+                if (p == q)
+                    continue;
+                if (q.first == p.first)
+                    continue;
+                if (q.second >= p.second - codedistance / 2 && q.second <= p.second + codedistance / 2) {
+                    //搞一个容器装所有的全局变量名字，再进行搜索
+                    //map<string, GlobalVar*>
+                    //添加每个GlobalVar的codeclose
+                    nametovar[p.first]->addClosedis(q.first);
+                }
+            }
+        }
+    }
 //    for (auto &i : globals) {
 //        outs() << i->getName() << ":\n";
 //        if (i->getClosedis().empty()) {
@@ -420,29 +503,42 @@ int main(int argc, char *argv[]) {
             continue;
         auto it = basenametoname.find(g->getBaseName());
         if (it != basenametoname.end()) {
+            //可能有兄弟元素
             for (auto &bg : it->second) {
                 if (bg == g->getName())
                     continue ;
                 g->addBrother(bg);
             }
         }
+//        for (auto &g2 : globals) {
+//            string gn = g->getName(), g2n = g2->getName();
+//            if (g2n == gn)
+//                continue;
+//            if (isCloseName(gn, g2n)) {
+//                g->addClosename(g2n);
+//            }
+//        }
+    }
+    int count = 0;
+    for (auto &g1 : globals) {
+        string string1 = g1->getName();
         for (auto &g2 : globals) {
-            string gn = g->getName(), g2n = g2->getName();
-            if (g2n == gn)
-                continue;
-            if (isCloseName(gn, g2n)) {
-                g->addClosename(g2n);
+            if (g1 == g2)
+                continue ;
+            string string2 = g2->getName();
+            if (isCloseName(string1, string2)) {
+                g1->addClosename(string2);
             }
         }
     }
     //输出兄弟关系的变量
-    for (auto &g : globals) {
-        outs() << g->getName() << ": ";
-        for (auto &gb : g->getBrother()) {
-            outs() << gb << " ";
-        }
-        outs() << "\n";
-    }
+//    for (auto &g : globals) {
+//        outs() << g->getName() << ": ";
+//        for (auto &gb : g->getBrother()) {
+//            outs() << gb << " ";
+//        }
+//        outs() << "\n";
+//    }
     //搜集具有相似命名的变量
 //    for (auto &g : globals) {
 //        outs() << g->getName() << ": ";
@@ -456,12 +552,10 @@ int main(int argc, char *argv[]) {
     for (auto *dg : sdg.getSDG()) {
         for (auto *node : dg->getNodes()) {
             if (Value *v = sdg.getValue(node)) {
-//                outs() << *v << "\n";
                 if (auto *inst = dyn_cast<Instruction>(v)) {
                     auto it = Instrtovar.find(inst);
                     if (it != Instrtovar.end()) {
                         for (auto &g : it->second) {
-//                            outs() << g->getName() << "\n";
                             g->addnode(node);
                         }
                     }
@@ -471,20 +565,113 @@ int main(int argc, char *argv[]) {
     }
     //计算依赖
     for (auto &g : globals) {
-        outs() << g->getName() << ": ";
-        for (auto &node : g->getnode()) {
-            outs() << node << " ";
-        }
-        outs() << "\n";
+        Dep(sdg, g);
     }
     //输出ControlDep
-    for (auto &g : globals) {
-        outs() << g->getName() << ": ";
-        for (auto &p : g->getControldep()) {
-            outs() << p.first << " for " << p.second << " times ";
+//    for (auto &g : globals) {
+//        outs() << g->getName() << ": ";
+//        for (auto &p : g->getControldep()) {
+//            outs() << p.first << " for " << p.second << " times ";
+//        }
+//        outs() << "\n";
+//    }
+    //输出MemDep
+//        for (auto &g : globals) {
+//            outs() << g->getName() << ": ";
+//            for (auto &p : g->getDatadep()) {
+//                outs() << p.first << " for " << p.second << " times ";
+//            }
+//            outs() << "\n";
+//        }
+    //所有信息的输出
+        for (auto &g : globals) {
+            outs() << "变量名 " << g->getName() << ": " << g->getTimes() << " times ";
+            outs() << "\n距离近: ";
+            for (auto &p : g->getClosedis()) {
+                outs() << p.first << " for " << p.second << " times  ";
+            }
+            outs() << "\n兄弟元素: ";
+            for (auto &s : g->getBrother()) {
+                outs() << s << "\n";
+            }
+            outs() << "\n相似命名: ";
+            for (auto &s : g->getClosename()) {
+                outs() << s << "\n";
+            }
+            outs() << "\n控制依赖关系: ";
+            for (auto &p : g->getControldep()) {
+                outs() << p.first << " for " << p.second << " times  ";
+            }
+            outs() << "\n数据依赖关系: ";
+            for (auto &p : g->getDatadep()) {
+                outs() << p.first << " for " << p.second << " times  ";
+            }
+            outs() << "\n\n";
         }
-        outs() << "\n";
-    }
+//        变量对:d[3],d[4]
+//        出现距离近的次数:3
+//        是否为兄弟元素:1
+//        是否有相似命名:1
+//        相互之间控制依赖次数:3
+//        相互之间数据依赖次数:4
+        Json::Value data;
+        int check1 = 0;
+        for (auto it1 = globals.begin(); it1 != globals.end(); it1++) {
+            for (auto it2 = std::next(it1); it2 != globals.end(); it2++) {
+                check1++;
+                if (it1 == it2)
+                    continue ;
+                auto g1 = *it1;
+                auto g2 = *it2;
+                int maxcodeclosetimes = 0;
+                string g1name = g1->getName();
+                string g2name = g2->getName();
+                if (g1->getClosedis().find(g2name) != g1->getClosedis().end()) {
+                    maxcodeclosetimes = g1->getClosedis()[g2name];
+                }
+                if (g2->getClosedis().find(g1name) != g2->getClosedis().end()) {
+                    int t = g2->getClosedis()[g1name];
+                    if (t > maxcodeclosetimes)
+                        maxcodeclosetimes = t;
+                }
+                int isbrother = 0;
+                int issimilarname = 0;
+                if (g1->getType() != 1 && g2->getType() != 1) {
+                    if (g1->getBrother().find(g2name) != g1->getBrother().end()) {
+                        isbrother = 1;
+                        issimilarname = 1;
+                    }
+                }
+                if (issimilarname == 0) {
+                    if (g1->getClosename().find(g2name) !=
+                        g1->getClosename().end()) {
+                        issimilarname = 1;
+                    }
+                    if (g2->getClosename().find(g1name) != g2->getClosename().end()) {
+                        issimilarname = 1;
+                    }
+                }
+                int contrldeptimes = 0, datadeptimes = 0;
+                contrldeptimes = g1->getControldep()[g2name] +
+                                 g2->getControldep()[g1name];
+                datadeptimes =
+                        g1->getDatadep()[g2name] + g2->getDatadep()[g1name];
+                Json::Value item;
+                item["left times"] = g1->getTimes();
+                item["right times"] = g2->getTimes();
+                item["Variable Pair"] = filename + ":::" + g1name + "," + filename + ":::" + g2name;
+                item["Close Proximity Count"] = maxcodeclosetimes;
+                item["Is Sibling"] = isbrother;
+                item["Has Similar Naming"] = issimilarname;
+                item["Control Dependency Count"] = contrldeptimes;
+                item["Data Dependency Count"] = datadeptimes;
+                data.append(item);
+            }
+        }
+        outs() << check1 << "\n";
+        ofstream output("/Users/wzxpc/Downloads/myproject/myoutput/output.json");
+        output << data;
+        output.close();
     return 0;
 }
 bool isStructArray(Type* type) {
@@ -539,16 +726,18 @@ bool isCloseName(const string &name1, const string &name2) {
         i--;
     string prefix = name1.substr(0, i);
     char lastchar = prefix.back();
-    if (lastchar == '[' || lastchar == '.')
+    if (lastchar == '[' || lastchar == '.' || lastchar == '_')
         return true;
     if (i < minlen && isalpha(lastchar) && (islower(lastchar) && isupper(name1[i + 1]) || isupper(lastchar) && islower(name1[i + 1])))
+        return true;
+    if (i < minlen && isalpha(lastchar) && isdigit(name1[i]) && isdigit(name2[i]))
         return true;
     return false;
 }
 void Dep(llvmdg::SystemDependenceGraph &sdg, GlobalVar *Gvar) {
     for (auto *node : Gvar->getnode()) {
         controldep(sdg, node, Gvar);
-//        datadep(sdg, node, Gvar);
+        datadep(sdg, node, Gvar);
     }
 }
 map<dg::sdg::DGNode*, int> visited;//visited[node] = 1是访问过的
@@ -591,17 +780,18 @@ void findcontrolflow(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node) 
                             }
                         }
                         auto *v = brinst->getOperand(0);
-                        //outs() << *v << "\n";
+//                        outs() << *v << "\n";
                         tofindcomesfrom.insert(conblock->back());
 
                     }
                     else if (auto *switchinst = dyn_cast<SwitchInst>(inst)) {
                         Value *v = switchinst->getCondition();
-                        //outs() << *v << "\n";
+//                        outs() << *v << "\n";
                         tofindcomesfrom.insert(conblock->back());
                     }
                 }
             }
+            findcontrolflow(sdg, conblock->back());
         }
     }
 }
@@ -609,6 +799,7 @@ void findcontrolvar(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode * dg_nod
     if (visited[dg_node1] == 1)
         return ;
     visited[dg_node1] = 1;
+//    outs() << Gvar->getName() << "\n";
     int thisid = dg_node1->getID();
     int thatid = 0;
     for (auto *usedep : dg_node1->users()) {
@@ -621,16 +812,99 @@ void findcontrolvar(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode * dg_nod
     }
     if (Value *v = sdg.getValue(dg_node1)) {
         if (Instruction *inst = dyn_cast<Instruction>(v)) {
-            if (inst && isa<LoadInst>(inst)) {
+//            outs() << *inst << "\n";
+            if (isa<LoadInst>(inst)) {
                 LoadInst *loadInst = dyn_cast<LoadInst>(inst);
                 Value *from = loadInst->getOperand(0);
+//                outs() << *from << "\n";
                 if (from && isa<GlobalVariable>(from)) {
                     if (from->hasName()) {
                         Gvar->addControldep(from->getName().str());
                     }
                 }
+                else if (from && isa<GEPOperator>(from)) {
+                    GEPOperator *GEPOp = dyn_cast<GEPOperator>(from);
+                    int num = GEPOp->getNumOperands();
+                    int level = num - 2;
+                    auto *basev = GEPOp->getOperand(0);
+                    string fullname = basev->getName().str();
+//                    basev->getType()->print(llvm::outs());
+                    if (auto *BasePtr = dyn_cast<PointerType>(basev->getType())) {
+                        auto *pointeetype = BasePtr->getElementType();
+                        auto *arraytype = dyn_cast<ArrayType>(pointeetype);
+                        if (arraytype) {
+                            if (auto *Idx = GEPOp->getOperand(2)) {
+                                //获取第一个维度的下标
+                                if (auto *CIdx = dyn_cast<ConstantInt>(Idx)) {
+                                    unsigned idx = CIdx->getZExtValue();
+                                    fullname += "[" + to_string(idx) + "]";
+                                }
+                                else {
+                                    //下标不是一个ConstantInt
+
+                                }
+                            }
+                            //判断操作数的类型，是不是高维数组
+                            Value *ope = GEPOp->getOperand(0);
+                            //outs() << *ope << "\n";
+                            int dimension = 1;//记录数组的维度
+                            if (auto *pointertype = dyn_cast<PointerType>(ope->getType())) {
+                                if (auto *arraytype = dyn_cast<ArrayType>(pointertype->getElementType())) {
+                                    while (auto *nexttype = dyn_cast<ArrayType>(arraytype->getElementType())) {
+                                        dimension++;
+                                        arraytype = nexttype;
+                                    }
+                                }
+                            }
+                            int tempdimension = dimension;
+                            for (unsigned int i = 3; i < GEPOp->getNumOperands() && dimension > 1; i++, dimension--) {
+                                //获取其他维度下标
+                                if (auto *Idx = GEPOp->getOperand(i)) {
+                                    if (auto *CIdx = dyn_cast<ConstantInt>(Idx)) {
+                                        unsigned idx = CIdx->getZExtValue();
+                                        fullname += "[" + to_string(idx) + "]";
+                                    }
+                                }
+                            }
+                            Gvar->addControldep(fullname);
+                        }
+                        else {
+                            outs() << "it's a struct*******\n";
+                            string fieldname;
+                            auto *basevariable = dyn_cast<GlobalVariable>(basev);
+                            if (!basevariable)
+                                return ;
+                            auto mn = dyn_cast<MDNode>(basevariable->getMetadata("dbg")->getOperand(0));
+                            if (auto *mn2 = dyn_cast<MDNode>(mn->getOperand(3))) {
+                                if (auto *mn3 = dyn_cast<MDNode>(mn2->getOperand(4))) {
+                                    function<void(int, MDNode*)> f = [&] (int depth, MDNode* mn0) { //处理结构体嵌套
+                                        if (depth == level)
+                                            return;
+                                        unsigned idx = cast<ConstantInt>(GEPOp->getOperand(2 + depth))->getZExtValue();
+                                        if (auto *mn4 = dyn_cast<MDNode>(mn0->getOperand(idx))) {
+                                            if (MDString *mds = dyn_cast<MDString>(mn4->getOperand(2))) {
+                                                fieldname = fieldname + "." + mds->getString().str();
+                                            }
+                                            if (depth + 1 == level)
+                                                return;
+                                            if (auto *mn5 = dyn_cast<MDNode>(mn4->getOperand(3))) {
+                                                if (auto *mn6 = dyn_cast<MDNode>(mn5->getOperand(4))) {
+                                                    f(depth + 1, mn6);
+                                                }
+                                            }
+                                        }
+                                    };
+                                    f(0, mn3);
+                                }
+                            }
+                            fullname += fieldname;
+                            Gvar->addControldep(fullname);
+                        }
+                    }
+
+                }
             }
-            else if (inst && isa<CallInst>(inst)) {
+            else if (isa<CallInst>(inst)) {
                 CallInst *Cinst = dyn_cast<CallInst>(inst);
                 int nums = Cinst->getNumArgOperands();
                 for (int i = 0; i < nums; i++) {
@@ -648,14 +922,175 @@ void controldep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, Globa
     if (!node)
         return;
     visited.clear();
+    outs() << Gvar->getName() << "\n";
     findcontrolflow(sdg, node);
     visited.clear();
+//    outs() << tofindcomesfrom.size() << "\n";
     for (auto *dg_node : tofindcomesfrom) {
         findcontrolvar(sdg, dg_node, nullptr, Gvar);
+    }
+    tofindcomesfrom.clear();
+}
+int datacount = 0;
+void finddatavar(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node1, dg::sdg::DGNode *node_pre, GlobalVar *Gvar, int depth) {
+    cout << datacount << "\n";
+    datacount++;
+    if (!node1)
+        return ;
+    if (node1 == node_pre)
+        return ;
+    if (visited[node1] == 1)
+        return ;
+    visited[node1] = 1;
+    Value *vofnode1 = sdg.getValue(node1);
+    if (!vofnode1)
+        return ;
+    Instruction *I = dyn_cast<Instruction> (vofnode1);
+    outs() << "Now we are dealing with the Instruction " << *I << "\n";
+    if (auto *GEPOp = dyn_cast<GEPOperator>(I)) {
+        //如果是一个数组(下标为变量)
+    }
+    int thisid = node1->getID();
+    int thatid = 0;
+    for (auto *usedep : node1->users()) {
+        if (auto *v = sdg.getValue(usedep)) {
+            outs() << *v << "\n";
+            Instruction *instruction = dyn_cast<Instruction>(v);
+            outs() << *instruction << "\n";
+            thatid = usedep->getID();
+            if (thatid > thisid)
+                continue;
+            finddatavar(sdg, dg::sdg::DGNode::get(usedep), node1, Gvar, depth + 1);
+        }
+    }
+    for (auto *memdep : node1->memdep()) {
+        if (auto *v = sdg.getValue(memdep)) {
+            outs() << *v << "\n";
+            Instruction *instruction = dyn_cast<Instruction>(v);
+            outs() << *instruction << "\n";
+            thatid = memdep->getID();
+            if (thatid > thisid)
+                continue;
+            finddatavar(sdg, dg::sdg::DGNode::get(memdep), node1, Gvar, depth + 1);
+        }
+    }
+    if (depth == 0)
+        return ;
+    if (Value *v = sdg.getValue(node1)) {
+        if (Instruction *inst = dyn_cast<Instruction>(v)) {
+            if (isa<LoadInst>(inst)) {
+                LoadInst *loadinst = dyn_cast<LoadInst>(inst);
+                Value *from = loadinst->getOperand(0);
+                if (from)
+                    outs() << *from << "\n";
+                if (from && isa<GlobalVariable>(from)) {
+                        if (from->hasName()) {
+                            string name = from->getName().str();
+                            Gvar->addDatadep(name);
+                        }
+
+                }
+                if (from && isa<GEPOperator>(from)) {
+                    auto *GEPOp = dyn_cast<GEPOperator>(from);
+                    auto *basev = GEPOp->getOperand(0);
+                    if (isa<PointerType>(basev->getType())) {
+                        auto *BasePtr = dyn_cast<PointerType>(basev->getType());
+                        auto *pointeetype = BasePtr->getElementType();
+                        if (isa<ArrayType>(pointeetype)) {
+                            auto *arraytype = dyn_cast<ArrayType>(pointeetype);
+                            if (arraytype) {
+                                string fullname = basev->getName().str();
+                                if (auto *Idx = GEPOp->getOperand(2)) {
+                                    // 获取第一个维度的下标
+                                    if (auto *CIdx = dyn_cast<ConstantInt>(Idx)) {
+                                        unsigned idx = CIdx->getZExtValue();
+                                        fullname += "[" + to_string(idx) + "]";
+                                    } else {
+                                        // 下标不是一个ConstantInt
+                                    }
+                                }
+                                // 判断操作数的类型，是不是高维数组
+                                Value *ope = GEPOp->getOperand(0);
+                                // outs() << *ope << "\n";
+                                int dimension = 1; // 记录数组的维度
+                                if (auto *pointertype = dyn_cast<PointerType>(ope->getType())) {
+                                    if (auto *arraytype = dyn_cast<ArrayType>(pointertype->getElementType())) {
+                                        while (auto *nexttype = dyn_cast<ArrayType>(arraytype->getElementType())) {
+                                            dimension++;
+                                            arraytype = nexttype;
+                                        }
+                                    }
+                                }
+                                int tempdimension = dimension;
+                                for (unsigned int i = 3; i < GEPOp->getNumOperands() && dimension > 1; i++, dimension--) {
+                                    // 获取其他维度下标
+                                    if (auto *Idx = GEPOp->getOperand(i)) {
+                                        if (auto *CIdx = dyn_cast<ConstantInt>(Idx)) {
+                                            unsigned idx = CIdx->getZExtValue();
+                                            fullname += "[" + to_string(idx) + "]";
+                                        }
+                                    }
+                                }
+                                Gvar->addDatadep(fullname);
+                            }
+                        }
+                        else if (isa<StructType>(pointeetype)){
+                            int num = GEPOp->getNumOperands();
+                            int level = num - 2;
+                            string fullname = basev->getName().str();
+                            string fieldname;
+                            auto basevariable = dyn_cast<GlobalVariable>(basev);
+                            if (!basevariable)
+                                return ;
+                            auto mn = dyn_cast<MDNode>(basevariable->getMetadata("dbg")->getOperand(0));
+                            if (auto *mn2 = dyn_cast<MDNode>(mn->getOperand(3))) {
+                                if (auto *mn3 = dyn_cast<MDNode>(mn2->getOperand(4))) {
+                                    function<void(int, MDNode*)> f = [&] (int depth, MDNode* mn0) { //处理结构体嵌套
+                                        if (depth == level)
+                                            return;
+                                        unsigned idx = cast<ConstantInt>(GEPOp->getOperand(2 + depth))->getZExtValue();
+                                        if (auto *mn4 = dyn_cast<MDNode>(mn0->getOperand(idx))) {
+                                            if (MDString *mds = dyn_cast<MDString>(mn4->getOperand(2))) {
+                                                fieldname = fieldname + "." + mds->getString().str();
+                                            }
+                                            if (depth + 1 == level)
+                                                return;
+                                            if (auto *mn5 = dyn_cast<MDNode>(mn4->getOperand(3))) {
+                                                if (auto *mn6 = dyn_cast<MDNode>(mn5->getOperand(4))) {
+                                                    f(depth + 1, mn6);
+                                                }
+                                            }
+                                        }
+                                    };
+                                    f(0, mn3);
+                                }
+                            }
+                            fullname += fieldname;
+                            Gvar->addDatadep(fullname);
+                        }
+                    }
+
+                }
+            }
+            else if (isa<CallInst>(inst)) {
+                CallInst *callInst = dyn_cast<CallInst>(inst);
+                int nums = callInst->getNumArgOperands();
+                for (int i = 0; i < nums; i++) {
+                    Value *varg = callInst->getArgOperand(i);
+                    if (varg && isa<GlobalVariable>(varg)) {
+                        string name = varg->getName().str();
+                        Gvar->addDatadep(name);
+//                        outs() << "addDateDep\n";
+                    }
+                }
+            }
+        }
     }
 }
 void datadep(llvmdg::SystemDependenceGraph &sdg, dg::sdg::DGNode *node, GlobalVar *Gvar) {
     if (!node)
         return;
-    map<dg::sdg::DGNode*, int> visited;//visited[node] = 1是访问过的
+    visited.clear();
+    finddatavar(sdg, node, nullptr, Gvar, 0);
+    visited.clear();
 }
