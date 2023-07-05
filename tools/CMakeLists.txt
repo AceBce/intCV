@@ -169,3 +169,10 @@ target_link_libraries(llvm-my-work PRIVATE dgllvmslicer
 		PRIVATE ${llvm_irreader}
 		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
 		)
+add_executable(llvm-my-detector llvm-multivariable-detector.cpp)
+target_link_libraries(llvm-my-detector PRIVATE dgllvmslicer
+		PRIVATE dgllvmsdg
+		PRIVATE ${SVF_LIBS}
+		PRIVATE ${llvm_irreader}
+		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
+		)

@@ -668,9 +668,28 @@ int main(int argc, char *argv[]) {
                 data.append(item);
             }
         }
-        outs() << check1 << "\n";
-        ofstream output("/Users/wzxpc/Downloads/myproject/myoutput/output.json");
+        outs() << "共有" << check1 << "对全局变量对" << "\n";
+        std::__fs::filesystem::path currentPath = std::__fs::filesystem::current_path();
+        std::cout << "当前工作目录: " << currentPath << std::endl;
+        ofstream output("myoutput/output.json");
         output << data;
+        int Gvarnum = 0;//全局变量的数量
+        int Avarnum = 0;//局部变量的数量
+        for (auto &Gvar : M->globals()) {
+            Gvarnum++;
+        }
+        for (auto &F : *M) {
+            for (auto &BB : F) {
+                for (auto &II : BB) {
+                    if (auto *Inst = dyn_cast<AllocaInst>(&II)) {
+                        Avarnum++;
+                    }
+                }
+            }
+        }
+        std::cout << "所有变量的数量: " << Gvarnum + Avarnum << "\n";
+        std::cout << "局部变量的数量: " << Avarnum << "\n";
+        std::cout << "全局变量的数量: " << Gvarnum << "\n";
         output.close();
     return 0;
 }

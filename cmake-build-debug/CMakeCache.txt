@@ -292,11 +292,14 @@ ENABLE_CFG:BOOL=ON
 //Enable fuzzing tests
 ENABLE_FUZZING:BOOL=OFF
 
+//Path to a program.
+GITCOMMAND:FILEPATH=/usr/bin/git
+
 //Git command line client
 GIT_EXECUTABLE:FILEPATH=/usr/bin/git
 
 //Git version hash
-GIT_VERSION:STRING=unknown
+GIT_VERSION:STRING=52336ea
 
 //Path to a file.
 LIBXML2_INCLUDE_DIR:PATH=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/include/libxml2
@@ -600,6 +603,8 @@ FIND_PACKAGE_MESSAGE_DETAILS_Git:INTERNAL=[/usr/bin/git][v2.39.2 (Apple Git-143)
 FIND_PACKAGE_MESSAGE_DETAILS_LibXml2:INTERNAL=[/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/lib/libxml2.tbd][/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/include/libxml2][v2.9.13()]
 //Details about finding ZLIB
 FIND_PACKAGE_MESSAGE_DETAILS_ZLIB:INTERNAL=[/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/lib/libz.tbd][/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/include][v1.2.11()]
+//ADVANCED property for variable: GITCOMMAND
+GITCOMMAND-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: GIT_EXECUTABLE
 GIT_EXECUTABLE-ADVANCED:INTERNAL=1
 //Test HAS_FUZZER
