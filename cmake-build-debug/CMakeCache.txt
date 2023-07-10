@@ -299,7 +299,7 @@ GITCOMMAND:FILEPATH=/usr/bin/git
 GIT_EXECUTABLE:FILEPATH=/usr/bin/git
 
 //Git version hash
-GIT_VERSION:STRING=52336ea
+GIT_VERSION:STRING=200cdab
 
 //Path to a file.
 LIBXML2_INCLUDE_DIR:PATH=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX13.3.sdk/usr/include/libxml2

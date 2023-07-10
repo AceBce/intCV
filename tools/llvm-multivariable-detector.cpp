@@ -71,13 +71,19 @@ class AllCorrelatedVars {
     bool find(string varName) {
         return vars.find(varName) != vars.end();
     }
+    bool add(const set<string> &vars) {
+        int originlen = this->vars.size();
+        this->vars.insert(vars.begin(), vars.end());
+        len = this->vars.size();
+        return len >= originlen;
+    }
 };
 
 // 对变量的访问
 class varVisit {
     string varName; // 变量名
     int visitMode; // 访问模式 0:读 1:写
-    long long int line; // 行号
+    long long int line{}; // 行号
     set<string> *correlatedVars{}; // 指向该变量所属的关联变量组
     public:
     varVisit(const string &varName, int visitMode, long long int line,
@@ -87,6 +93,11 @@ class varVisit {
     varVisit(const string &varName, int visitMode, long long int line)
             : varName(varName), visitMode(visitMode), line(line) {}
     varVisit(string varName, int visitMode) : varName(varName), visitMode(visitMode) {}
+    string toString() {
+        stringstream ss;
+        ss << varName << " " << visitMode << " " << line << "\n";
+        return ss.str();
+    }
 };
 
 // 存放某中断函数里的所有关联变量以及访问模式
@@ -103,6 +114,9 @@ class InterruptVars {
     void addVarVisit(const varVisit &varVisit) {
         varVisits.push_back(varVisit);
     }
+    int getVarVisitNum() {
+        return varVisits.size();
+    }
 };
 
 llvm::cl::opt<bool> enable_debug(
@@ -111,18 +125,52 @@ llvm::cl::opt<bool> enable_debug(
 
 int main(int argc, char *argv[]) {
     //读入json文件
-    Json::Reader reader;
+    Json::Value reader;
+    ifstream ifs("/Users/wzxpc/Downloads/myproject/myoutput/output_data.json");
+    if (!ifs.is_open()) {
+        std::cerr << "open json file failed" << endl;
+        return 0;
+    }
+    ifs >> reader;
     //解析json文件
     // 假设所有关联变量存储在中allVarSet中
     vector<set<string>> allVarSet;
-    // 把中断里访问的变量存储到varSet中
-    vector<set<string>> varSet;
+    for (const auto & item : reader) {
+        string varpair = item[0].asString();
+        int index = varpair.find(",");
+        string var1 = varpair.substr(0, index);
+        string var2 = varpair.substr(index + 1);
+        set<string> vars;
+        int index1 = var1.find(":::") + 3;
+        int index2 = var2.find(":::") + 3;
+        string var1Name = var1.substr(index1);
+        string var2Name = var2.substr(index2);
+        cout << var1Name << " " << var2Name << "\n";
+        vars.insert(var1Name);
+        vars.insert(var2Name);
+        allVarSet.push_back(vars);
+    }
+
     // 检查一个变量属于哪个变量组
     // 假设已经填好了
     unordered_map<string, set<string>> variableToGroup;
-    AllCorrelatedVars allCorrelatedVars;
+    for (auto &s : allVarSet) {
+        for (auto &var : s) {
+            variableToGroup[var] = s;
+        }
+    }
+    AllCorrelatedVars allCorrelatedVars; // 存放所有关联变量，用于判断中断里面有没有访问到关联变量
+    for (auto &var : allVarSet) {
+        if (!allCorrelatedVars.add(var)) {
+            std::cerr << "add all correlated vars failed" << endl;
+            return 1;
+        }
+    }
     // 放一个存储所有中断函数的容器
     vector<InterruptVars*> interruptVars;
+
+    // 放一个放所有中断里出现过的关联变量的容器
+    set<string> CorrelatedVarsInInterrupt;
 
     setupStackTraceOnError(argc, argv);
     SlicerOptions options = parseSlicerOptions(argc, argv);
@@ -146,6 +194,7 @@ int main(int argc, char *argv[]) {
             // 获取这个函数的所有关联变量
             InterruptVars *interruptVar = new InterruptVars(&F);
             // 遍历这个函数
+            cout << "正在遍历" << funcName << "\n";
             for (auto &BB : F) {
                 // 遍历这个基本块
                 for (auto &I : BB) {
@@ -175,21 +224,54 @@ int main(int argc, char *argv[]) {
                             // 添加一个访问
                             varVisit visit(varName, visitMode, line, correlatedVars);
                             interruptVar->addVarVisit(visit);
+                            CorrelatedVarsInInterrupt.insert(varName);
+                            outs() << visit.toString();
                         }
                         // 如果不是就不管
-                        outs() << op->getName() << "\n";
                     }
                 }
+            }
+            // 把这个中断函数加入到中断函数容器中
+            if (interruptVar->getVarVisitNum() > 0) {
+                interruptVars.push_back(interruptVar);
+            } else {
+                delete interruptVar;
             }
         }
     }
     interruptVars; // 这里面应该存放了所有的中断函数，存放了这个函数访问的所有关联变量和它所属的变量组
     // 应该把所有的中断函数里访问的关联变量组都收集起来，然后在主程序里找有没有对这些变量的访问,这主要是为了在主程序里划定原子区
+    set<int> lines; // 这些存放的行号代表已经生成原子区了
     for (auto &F : *M) {
         string funcName = F.getName().str();
         if (funcName.find("interrupt") == string::npos) {
             // 不是中断函数就检查
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    // 检查是否访问了中断里出现的关联变量
+                    int line = I.getDebugLoc().getLine();
+                    if (lines.find(line) != lines.end())
+                        continue ;
+                    for (int i = 0; i < I.getNumOperands(); i++) {
+                        auto *op = I.getOperand(i);
+                        string varName = op->getName().str();
 
+                        if (CorrelatedVarsInInterrupt.find(varName) != CorrelatedVarsInInterrupt.end() && lines.find(line) == lines.end()) {
+                            lines.insert(line);
+                            // 如果访问了中断里出现的关联变量，检查是哪个变量组的，再生成原子区
+                            // 判断读写类型
+                            int visitMode = 0; // 0:读 1:写
+                            if (I.getOpcode() == Instruction::Store)
+                                visitMode = 1;
+                            set<string>varsgroup = variableToGroup[varName];
+                            // 生成原子区
+                            // 获取这个基本块的最后一个节点
+                            Instruction *end = BB.getTerminator();
+                            
+                        }
+                    }
+                }
+            }
         }
     }
 }
