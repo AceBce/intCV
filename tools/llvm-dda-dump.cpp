@@ -170,10 +170,10 @@ static void printInterval(T &I, const char *pref = nullptr,
     if (pref)
         printf("%s", pref);
 
-    if (I.start.isUnknown())
+    if (I.Astart.isUnknown())
         printf("[? - ");
     else
-        printf("[%" PRIu64 " - ", *I.start);
+        printf("[%" PRIu64 " - ", *I.Astart);
 
     if (I.end.isUnknown())
         printf("?]");

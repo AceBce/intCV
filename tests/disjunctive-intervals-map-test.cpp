@@ -48,7 +48,7 @@ class DisjunctiveIntervalMapMatcher
             const auto &interval = pair.first;
             const auto &values = pair.second;
 
-            if (interval.start != std::get<0>(structure[i])) {
+            if (interval.Astart != std::get<0>(structure[i])) {
                 return false;
             }
 

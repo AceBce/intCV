@@ -46,6 +46,7 @@ using namespace std;
 using namespace llvm;
 using llvm::errs;
 
+const int LINE = 10; // 最长的原子区间长度
 // 一个关联变量组
 class CorrelatedVars {
     int len; // 这个组里有len个变量
@@ -118,7 +119,62 @@ class InterruptVars {
         return varVisits.size();
     }
 };
+class AtomicArea {
+    Instruction *Astart; // 原子区间的起始指令
+    Instruction *Aend; // 原子区间的结束指令
+    set<string> vars;
+    int startline, endline; // 原子区的行号范围
+  public:
+    AtomicArea(Instruction *start, Instruction *anEnd, const set<string> &vars)
+            : Astart(start), Aend(anEnd), vars(vars) {
+        if (Astart->getDebugLoc()) {
+            startline = Astart->getDebugLoc()->getLine();
+        }
+        if (Aend->getDebugLoc()) {
+            endline = Aend->getDebugLoc()->getLine();
+        }
+    }
+    AtomicArea(Instruction *start, Instruction *anEnd)
+            : Astart(start), Aend(anEnd) {}
+    Instruction *getStart() const {
+        return Astart;
+    }
+    AtomicArea() {}
+    Instruction *getEnd() const {
+        return Aend;
+    }
+    void setStart(Instruction *start) {
+        AtomicArea::Astart = start;
+    }
+    void setEnd(Instruction *end) {
+        AtomicArea::Aend = end;
+    }
+    void addVar(const string &var) {
+        vars.insert(var);
+    }
+    void setVars(const set<string> &vars) { AtomicArea::vars = vars; }
+    set<string> getVars() {
+        return vars;
+    }
+    string toString() {
+        stringstream ss;
+        ss << "start: " << Astart->getDebugLoc()->getLine() << " end: " << Aend->getDebugLoc()->getLine() << "\n";
+        ss << "start: " << Astart->getOpcodeName() << " " << Astart->getOperand(0)->getName().str() << "\n";
+        ss << "end: " << Aend->getOpcodeName() << " " << Aend->getOperand(0)->getName().str() << "\n";
+        ss << "vars: ";
+        for (auto &var : vars) {
+            ss << var << " ";
+        }
+        ss << "\n";
+        return ss.str();
+    }
+    bool operator< (const AtomicArea &other) const {
+        return startline < other.startline;
+    }
+};
 
+
+vector<AtomicArea*> AtomicAreas;// 存放所有原子区间
 llvm::cl::opt<bool> enable_debug(
         "dbg", llvm::cl::desc("Enable debugging messages (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
@@ -150,10 +206,44 @@ int main(int argc, char *argv[]) {
         vars.insert(var2Name);
         allVarSet.push_back(vars);
     }
-
+    unordered_map<string, int> varToSet;
+    vector<set<string>> allVarSetNoPair;
+    for (auto &var_set : allVarSet) {
+        bool found = false;
+        int idx = -1;
+        for (auto &var : var_set) {
+            if (varToSet.count(var)) {
+                found = true;
+                idx = varToSet[var];
+                break;
+            }
+        }
+        if (found) {
+            for (auto &var : var_set) {
+                allVarSetNoPair[idx].insert(var);
+            }
+        }
+        else {
+            allVarSetNoPair.push_back(var_set);
+            idx = allVarSetNoPair.size() - 1;
+        }
+        for (auto &var : var_set) {
+            varToSet[var] = idx;
+        }
+    }
+    cout << "***************************\n";
+    for (auto &s : allVarSetNoPair) {
+        for (auto &var : s) {
+            cout << var << " ";
+        }
+        cout << "\n";
+    }
+    cout << "***************************\n";
     // 检查一个变量属于哪个变量组
     // 假设已经填好了
     unordered_map<string, set<string>> variableToGroup;
+
+//    unordered_map<set<string>, string> groupToInterrupt;
     for (auto &s : allVarSet) {
         for (auto &var : s) {
             variableToGroup[var] = s;
@@ -247,16 +337,21 @@ int main(int argc, char *argv[]) {
         if (funcName.find("interrupt") == string::npos) {
             // 不是中断函数就检查
             for (auto &BB : F) {
-                for (auto &I : BB) {
+                for (auto iter = BB.begin(); iter != BB.end(); iter++) {
+                    auto &I = *iter;
                     // 检查是否访问了中断里出现的关联变量
-                    int line = I.getDebugLoc().getLine();
+                    int line = 0;
+                    if (I.getDebugLoc()) {
+                        line = I.getDebugLoc().getLine();
+                    }
+                    else
+                        continue ;
                     if (lines.find(line) != lines.end())
                         continue ;
                     for (int i = 0; i < I.getNumOperands(); i++) {
                         auto *op = I.getOperand(i);
                         string varName = op->getName().str();
-
-                        if (CorrelatedVarsInInterrupt.find(varName) != CorrelatedVarsInInterrupt.end() && lines.find(line) == lines.end()) {
+                        if (CorrelatedVarsInInterrupt.find(varName) != CorrelatedVarsInInterrupt.end()) {
                             lines.insert(line);
                             // 如果访问了中断里出现的关联变量，检查是哪个变量组的，再生成原子区
                             // 判断读写类型
@@ -265,13 +360,38 @@ int main(int argc, char *argv[]) {
                                 visitMode = 1;
                             set<string>varsgroup = variableToGroup[varName];
                             // 生成原子区
+                            AtomicArea *ar = new AtomicArea();
+                            ar->setStart(&I);
+                            ar->setVars(varsgroup);
+                            ar->setEnd(&I);
                             // 获取这个基本块的最后一个节点
                             Instruction *end = BB.getTerminator();
-                            
+                            BasicBlock::iterator iter2 = iter;
+                            int count = 0;
+                            while (iter2 != BB.end() && count < 10) {
+//                                outs() << *iter2 << "\n";
+                                for (int i = 0; i < iter2->getNumOperands(); i++) {
+                                    auto *op1 = iter2->getOperand(i);
+                                    string varName1 = op1->getName().str();
+                                    if (varsgroup.find(varName1) != varsgroup.end()) {
+                                        ar->setEnd(&*iter2);
+                                    }
+                                }
+                                if (&*iter2 == end)
+                                    break;
+                                iter2++;
+                                count++;
+                            }
+                            AtomicAreas.push_back(ar);
                         }
                     }
                 }
             }
         }
+    }
+    sort(AtomicAreas.begin(), AtomicAreas.end());
+    for (auto it : AtomicAreas) {
+        outs() << it->toString();
+        outs() << "--------------------\n";
     }
 }
