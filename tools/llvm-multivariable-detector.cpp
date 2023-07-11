@@ -231,26 +231,26 @@ int main(int argc, char *argv[]) {
             varToSet[var] = idx;
         }
     }
-    cout << "***************************\n";
-    for (auto &s : allVarSetNoPair) {
-        for (auto &var : s) {
-            cout << var << " ";
-        }
-        cout << "\n";
-    }
-    cout << "***************************\n";
+//    cout << "***************************\n";
+//    for (auto &s : allVarSetNoPair) {
+//        for (auto &var : s) {
+//            cout << var << " ";
+//        }
+//        cout << "\n";
+//    }
+//    cout << "***************************\n";
     // 检查一个变量属于哪个变量组
     // 假设已经填好了
     unordered_map<string, set<string>> variableToGroup;
 
 //    unordered_map<set<string>, string> groupToInterrupt;
-    for (auto &s : allVarSet) {
+    for (auto &s : allVarSetNoPair) {
         for (auto &var : s) {
             variableToGroup[var] = s;
         }
     }
     AllCorrelatedVars allCorrelatedVars; // 存放所有关联变量，用于判断中断里面有没有访问到关联变量
-    for (auto &var : allVarSet) {
+    for (auto &var : allVarSetNoPair) {
         if (!allCorrelatedVars.add(var)) {
             std::cerr << "add all correlated vars failed" << endl;
             return 1;
@@ -389,7 +389,22 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    sort(AtomicAreas.begin(), AtomicAreas.end());
+    AtomicAreas.erase(
+            std::remove_if(AtomicAreas.begin(), AtomicAreas.end(),
+                           [](const AtomicArea* area) {
+                                return std::any_of(AtomicAreas.begin(), AtomicAreas.end(),
+                                                  [area](const AtomicArea* other) {
+                                                        return other!=area &&
+                                                        other->getStart() <= area->getStart() &&
+                                                        other->getEnd() >= area->getEnd();
+                                                  });
+                           }), AtomicAreas.end()
+            );
+    sort(AtomicAreas.begin(), AtomicAreas.end(),[](const AtomicArea* area1, const AtomicArea* area2) {
+        return area1->getStart() < area2->getStart();
+    });
+
+
     for (auto it : AtomicAreas) {
         outs() << it->toString();
         outs() << "--------------------\n";
