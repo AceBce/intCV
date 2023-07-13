@@ -47,6 +47,9 @@ using namespace llvm;
 using llvm::errs;
 
 const int LINE = 10; // 最长的原子区间长度
+
+
+
 // 一个关联变量组
 class CorrelatedVars {
     int len; // 这个组里有len个变量
@@ -175,6 +178,27 @@ class AtomicArea {
 
 
 vector<AtomicArea*> AtomicAreas;// 存放所有原子区间
+
+
+
+bool checkIfCorrelated(Value* v, AllCorrelatedVars &acv, int depth = 0) {
+    if (depth >= 5) { // 递归深度太大，不再递归
+        return false;
+    }
+    //获取变量名
+    string name = v->getName().str();
+    if (acv.find(name)) { // 找到了，确实是关联变量
+        return true;
+    }
+    if (auto *inst = dyn_cast<Instruction>(v)) {
+        for (auto i = 0; i < inst->getNumOperands(); i++) {
+            if (checkIfCorrelated(inst->getOperand(i), acv, depth + 1)) { // 递归的去看是不是关联变量，因为SSA
+                return true;
+            }
+        }
+    }
+    return false;
+}
 llvm::cl::opt<bool> enable_debug(
         "dbg", llvm::cl::desc("Enable debugging messages (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
@@ -366,22 +390,50 @@ int main(int argc, char *argv[]) {
                             ar->setEnd(&I);
                             // 获取这个基本块的最后一个节点
                             Instruction *end = BB.getTerminator();
-                            BasicBlock::iterator iter2 = iter;
-                            int count = 0;
-                            while (iter2 != BB.end() && count < 10) {
-//                                outs() << *iter2 << "\n";
-                                for (int i = 0; i < iter2->getNumOperands(); i++) {
-                                    auto *op1 = iter2->getOperand(i);
-                                    string varName1 = op1->getName().str();
-                                    if (varsgroup.find(varName1) != varsgroup.end()) {
-                                        ar->setEnd(&*iter2);
+
+                            if (auto *br = dyn_cast<BranchInst>(&I)) {
+                                if (br->isConditional()) {
+                                    // 如果是一个条件分支跳转
+                                    // 判断一下这个条件分支跳转的条件是不是关联变量
+                                    auto *cond = br->getCondition();
+                                    if (checkIfCorrelated(cond, allCorrelatedVars)) {
+                                        /*
+                                         * 如果是关联变量，那么就要把这个if的结构找出来都加入到原子区里(如果里面访问到了这一组的关联变量)
+                                         */
+                                        BasicBlock::iterator iter2 = iter;
+                                        int count = 0;
+                                        while (count < LINE) {
+                                            for (int i = 0; i < iter2->getNumOperands(); i++) {
+                                                auto *op1 = iter2->getOperand(i);
+                                                string varName1 = op1->getName().str();
+                                                if (varsgroup.find(varName1) != varsgroup.end()) {
+                                                    ar->setEnd(&*iter2);
+                                                }
+                                            }
+                                            iter2++;
+                                            count++;
+                                        }
                                     }
                                 }
-                                if (&*iter2 == end)
-                                    break;
-                                iter2++;
-                                count++;
+                            } else {
+                                BasicBlock::iterator iter2 = iter;
+                                int count = 0;
+                                while (iter2 != BB.end() && count < LINE) {
+                                    //                                outs() << *iter2 << "\n";
+                                    for (int i = 0; i < iter2->getNumOperands(); i++) {
+                                        auto *op1 = iter2->getOperand(i);
+                                        string varName1 = op1->getName().str();
+                                        if (varsgroup.find(varName1) != varsgroup.end()) {
+                                            ar->setEnd(&*iter2);
+                                        }
+                                    }
+                                    if (&*iter2 == end)
+                                        break;
+                                    iter2++;
+                                    count++;
+                                }
                             }
+
                             AtomicAreas.push_back(ar);
                         }
                     }
