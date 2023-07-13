@@ -198,3 +198,5 @@
 3401	3466	1689041676136177211	tools/llvm-my-detector	71a67bc1f28fc304
 9	3652	1689210408797244061	tools/CMakeFiles/llvm-my-detector.dir/llvm-multivariable-detector.cpp.o	49d045eab3e343a2
 3652	3878	1689210409036253733	tools/llvm-my-detector	71a67bc1f28fc304
+9	4960	1689234979686048678	tools/CMakeFiles/llvm-my-work.dir/llvm-multivariable-find.cpp.o	adada0859d1343a8
+4961	5208	1689234979950278647	tools/llvm-my-work	d41d9011d1e6440d

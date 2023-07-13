@@ -1,0 +1,4 @@
+skXG用于进行训练
+addIsRelated用于添加标签，读取RealCorrelation_ForPredict.txt的内容，来给output.json中的内容加标签形成modified_data.json文件
+PruePredict.py加载xgboost_model.pkl的模型,读取modified_data.json的内容进行预测
+RealCorrelation.txt文件需要自己动手写，把每组管理写在一行，用英文逗号加空格进行分割
