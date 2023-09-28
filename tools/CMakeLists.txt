@@ -155,7 +155,11 @@ endif (HAVE_SVF)
         install(DIRECTORY include/
 	        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif (LLVM_DG)
-	add_executable(llvm-my-visit myvisittool.cpp)
+include_directories(/usr/include/jsoncpp/json)
+#include_directories(/mywork/ikos/core/include)
+#include_directories(/mywork/phasar/include)
+#include_directories(/mywork/klee/include)
+add_executable(llvm-my-visit myvisittool.cpp)
 target_link_libraries(llvm-my-visit PRIVATE dgllvmslicer
 		PRIVATE dgllvmsdg
 		PRIVATE ${SVF_LIBS}
@@ -176,3 +180,24 @@ target_link_libraries(llvm-my-detector PRIVATE dgllvmslicer
 		PRIVATE ${llvm_irreader}
 		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
 		)
+#add_executable(llvm-my-muvi llvm-muvi-detector.cpp)
+#target_link_libraries(llvm-my-muvi PRIVATE dgllvmslicer
+#		PRIVATE dgllvmsdg
+#		PRIVATE ${SVF_LIBS}
+#		PRIVATE ${llvm_irreader}
+##		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
+#		)
+#add_executable(llvm-my-tool llvm-tools-count.cpp)
+#target_link_libraries(llvm-my-tool PRIVATE dgllvmslicer
+#		PRIVATE dgllvmsdg
+#		PRIVATE ${SVF_LIBS}
+#		PRIVATE ${llvm_irreader}
+##		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
+#		)
+#add_executable(llvm-my-check llvm-checktest.cpp)
+#target_link_libraries(llvm-my-check PRIVATE dgllvmslicer
+#		PRIVATE dgllvmsdg
+#		PRIVATE ${SVF_LIBS}
+#		PRIVATE ${llvm_irreader}
+##		PRIVATE /Users/wzxpc/Downloads/jsoncpp-master/build/lib/libjsoncpp.dylib
+#		)
